@@ -61,6 +61,19 @@ Train an agent on a fixed set of N levels:
 python -m coinrun.train_agent --run-id myrun --num-levels N
 ```
 
+Run a grokking-style setup (small fixed train set + train/test split + stronger L2):
+
+```
+mpiexec -np 2 python -m coinrun.train_agent   --run-id <insert-id>   --grok   --num-envs 8   --num-levels 64   --set-seed 1   --total-timesteps 102400
+```
+
+This mode is intended for delayed generalization experiments. Basic TensorBoard logging now includes:
+
+- `train_rew_mean`: reward from train workers (seen level distribution)
+- `test_rew_mean`: reward from test workers (held-out/unseen levels)
+- `train_minus_test_gap`: direct overfitting/generalization gap
+- `weight_norm`: model parameter norm estimate derived from L2 loss
+
 Train an agent on the same 500 levels used in the paper:
 
 ```

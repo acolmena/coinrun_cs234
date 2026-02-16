@@ -58,6 +58,7 @@ class ConfigSingle(object):
         type_keys.append(('ent', 'entropy_coeff', float, .01))
         type_keys.append(('lr', 'learning_rate', float, 5e-4))
         type_keys.append(('gamma', 'gamma', float, 0.999))
+        type_keys.append(('tt', 'total_timesteps', int, int(256e6)))
 
         # Should the agent's velocity be painted in the upper left corner of observations.
         # 1/0 means True/False
@@ -117,6 +118,9 @@ class ConfigSingle(object):
 
         # Use high resolution images for rendering
         bool_keys.append(('hres', 'is_high_res'))
+
+        # Apply grokking-oriented defaults for small fixed train sets and explicit train/test split.
+        bool_keys.append(('grok', 'grokking'))
 
         self.RES_KEYS = []
 
@@ -183,6 +187,16 @@ class ConfigSingle(object):
         self.compute_args_dependencies()
 
     def compute_args_dependencies(self):
+        if self.GROKKING:
+            if self.NUM_LEVELS <= 0:
+                self.NUM_LEVELS = 64
+
+            if self.L2_WEIGHT <= 0:
+                self.L2_WEIGHT = 1e-3
+
+            if (not self.TEST) and MPI.COMM_WORLD.Get_size() > 1:
+                self.TEST = True
+
         if self.is_test_rank():
             self.NUM_LEVELS = 0
             self.USE_DATA_AUGMENTATION = 0

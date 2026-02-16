@@ -290,6 +290,41 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         base_dict = {'datapoints': datapoints}
         utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
 
+    def aggregate_reward_stats(ep_buffer):
+        local_rewards = [epinfo['r'] for epinfo in ep_buffer]
+        local_lengths = [epinfo['l'] for epinfo in ep_buffer]
+        local_stats = (
+            1 if Config.is_test_rank() else 0,
+            float(np.sum(local_rewards)),
+            int(len(local_rewards)),
+            float(np.sum(local_lengths)),
+        )
+        all_stats = comm.allgather(local_stats)
+
+        train_rew_sum = 0.0
+        train_rew_count = 0
+        train_len_sum = 0.0
+        test_rew_sum = 0.0
+        test_rew_count = 0
+        test_len_sum = 0.0
+
+        for is_test_rank, rew_sum, rew_count, len_sum in all_stats:
+            if is_test_rank:
+                test_rew_sum += rew_sum
+                test_rew_count += rew_count
+                test_len_sum += len_sum
+            else:
+                train_rew_sum += rew_sum
+                train_rew_count += rew_count
+                train_len_sum += len_sum
+
+        train_rew_mean = np.nan if train_rew_count == 0 else train_rew_sum / train_rew_count
+        test_rew_mean = np.nan if test_rew_count == 0 else test_rew_sum / test_rew_count
+        train_ep_len_mean = np.nan if train_rew_count == 0 else train_len_sum / train_rew_count
+        test_ep_len_mean = np.nan if test_rew_count == 0 else test_len_sum / test_rew_count
+
+        return train_rew_mean, test_rew_mean, train_ep_len_mean, test_ep_len_mean
+
     for update in range(1, nupdates+1):
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
@@ -353,6 +388,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             step = update*nbatch
             rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
             ep_len_mean = np.nanmean([epinfo['l'] for epinfo in active_ep_buf])
+            train_rew_mean, test_rew_mean, train_ep_len_mean, test_ep_len_mean = aggregate_reward_stats(active_ep_buf)
             
             mpi_print('\n----', update)
 
@@ -361,12 +397,24 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
             tb_writer.log_scalar(ep_len_mean, 'ep_len_mean')
             tb_writer.log_scalar(fps, 'fps')
+            tb_writer.log_scalar(train_rew_mean, 'train_rew_mean', step)
+            tb_writer.log_scalar(train_ep_len_mean, 'train_ep_len_mean', step)
+            if not np.isnan(test_rew_mean):
+                tb_writer.log_scalar(test_rew_mean, 'test_rew_mean', step)
+            if not np.isnan(test_ep_len_mean):
+                tb_writer.log_scalar(test_ep_len_mean, 'test_ep_len_mean', step)
+            if not np.isnan(test_rew_mean):
+                tb_writer.log_scalar(train_rew_mean - test_rew_mean, 'train_minus_test_gap', step)
 
             mpi_print('time_elapsed', tnow - tfirststart, run_t_total, train_t_total)
             mpi_print('timesteps', update*nsteps, total_timesteps)
 
             mpi_print('eplenmean', ep_len_mean)
             mpi_print('eprew', rew_mean_10)
+            mpi_print('train_rew_mean', train_rew_mean)
+            mpi_print('test_rew_mean', test_rew_mean)
+            if not np.isnan(test_rew_mean):
+                mpi_print('train_minus_test_gap', train_rew_mean - test_rew_mean)
             mpi_print('fps', fps)
             mpi_print('total_timesteps', update*nbatch)
             mpi_print([epinfo['r'] for epinfo in epinfobuf10])
@@ -375,6 +423,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 for (lossval, lossname) in zip(lossvals, model.loss_names):
                     mpi_print(lossname, lossval)
                     tb_writer.log_scalar(lossval, lossname)
+
+                if 'l2_loss' in model.loss_names:
+                    l2_idx = model.loss_names.index('l2_loss')
+                    weight_norm = np.sqrt(max(0.0, 2.0 * lossvals[l2_idx]))
+                    mpi_print('weight_norm', weight_norm)
+                    tb_writer.log_scalar(weight_norm, 'weight_norm', step)
             mpi_print('----\n')
 
         if can_save:
