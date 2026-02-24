@@ -96,6 +96,15 @@ class ConfigSingle(object):
         # Overwrite the latest save file after this many updates
         type_keys.append(('si', 'save_interval', int, 10))
 
+        # Weights & Biases integration settings
+        type_keys.append(('wandb-project', 'wandb_project', str, 'coinrun'))
+        type_keys.append(('wandb-entity', 'wandb_entity', str, None))
+        type_keys.append(('wandb-group', 'wandb_group', str, None))
+        type_keys.append(('wandb-tags', 'wandb_tags', str, ''))
+        type_keys.append(('wandb-name', 'wandb_name', str, None))
+        type_keys.append(('wandb-mode', 'wandb_mode', str, 'online'))
+        type_keys.append(('wandb-api-key', 'wandb_api_key', str, None))
+
         # The number of evaluation environments to use
         type_keys.append(('num-eval', 'num_eval', int, 20, True))
 
@@ -117,6 +126,9 @@ class ConfigSingle(object):
 
         # Use high resolution images for rendering
         bool_keys.append(('hres', 'is_high_res'))
+
+        # Enable Weights & Biases logging
+        bool_keys.append(('wandb', 'wandb'))
 
         self.RES_KEYS = []
 

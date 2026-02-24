@@ -3,6 +3,7 @@ This is a copy of PPO from openai/baselines (https://github.com/openai/baselines
 """
 
 import time
+import os
 import joblib
 import numpy as np
 import tensorflow as tf
@@ -101,6 +102,7 @@ class Model(object):
         mpi_print('total num params:', total_num_params)
 
         l2_loss = tf.reduce_sum([tf.nn.l2_loss(v) for v in weight_params])
+        weight_norm = tf.global_norm(weight_params)
 
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT
 
@@ -131,10 +133,10 @@ class Model(object):
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
             return sess.run(
-                [pg_loss, vf_loss, entropy, approxkl, clipfrac, l2_loss, _train],
+                [pg_loss, vf_loss, entropy, approxkl, clipfrac, weight_norm, l2_loss, _train],
                 td_map
             )[:-1]
-        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac', 'l2_loss']
+        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac', 'weight_norm', 'l2_loss']
 
         def save(save_path):
             ps = sess.run(params)
@@ -282,13 +284,30 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     can_save = True
     checkpoints = [32, 64]
     saved_key_checkpoints = [False] * len(checkpoints)
+    wandb_module = None
+    wandb_run_enabled = False
+    run_name = Config.WANDB_NAME if Config.WANDB_NAME is not None else Config.RUN_ID
 
     if Config.SYNC_FROM_ROOT and rank != 0:
         can_save = False
 
+    if Config.WANDB and rank == 0:
+        import wandb as _wandb
+        wandb_module = _wandb
+        wandb_run_enabled = wandb_module.run is not None
+
     def save_model(base_name=None):
         base_dict = {'datapoints': datapoints}
-        utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
+        save_file = Config.get_save_file(base_name=base_name)
+        utils.save_params_in_scopes(sess, ['model'], save_file, base_dict)
+        return utils.file_to_path(save_file)
+
+    def maybe_log_checkpoint_artifact(checkpoint_path):
+        if not wandb_run_enabled or checkpoint_path is None or not os.path.exists(checkpoint_path):
+            return
+        artifact = wandb_module.Artifact(name='%s-ckpt' % run_name, type='model')
+        artifact.add_file(checkpoint_path)
+        wandb_module.log_artifact(artifact)
 
     for update in range(1, nupdates+1):
         assert nbatch % nminibatches == 0
@@ -348,11 +367,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         lossvals = np.mean(mblossvals, axis=0)
         tnow = time.time()
         fps = int(nbatch / (tnow - tstart))
+        step = update * nbatch
 
         if update % log_interval == 0 or update == 1:
-            step = update*nbatch
             rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
             ep_len_mean = np.nanmean([epinfo['l'] for epinfo in active_ep_buf])
+            ep_returns = [epinfo['r'] for epinfo in epinfobuf10]
             
             mpi_print('\n----', update)
 
@@ -368,25 +388,53 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             mpi_print('eplenmean', ep_len_mean)
             mpi_print('eprew', rew_mean_10)
             mpi_print('fps', fps)
-            mpi_print('total_timesteps', update*nbatch)
-            mpi_print([epinfo['r'] for epinfo in epinfobuf10])
+            mpi_print('total_timesteps', step)
+            mpi_print(ep_returns)
+
+            metrics_dict = {
+                'total_timesteps': int(step),
+                'fps': float(fps),
+                'train_rew_mean': float(rew_mean_10),
+                'eplenmean': float(ep_len_mean),
+                'policy_loss': float('nan'),
+                'value_loss': float('nan'),
+                'entropy': float('nan'),
+                'approxkl': float('nan'),
+                'clipfrac': float('nan'),
+                'weight_norm': float('nan'),
+                'l2_loss': float('nan'),
+            }
 
             if len(mblossvals):
                 for (lossval, lossname) in zip(lossvals, model.loss_names):
                     mpi_print(lossname, lossval)
                     tb_writer.log_scalar(lossval, lossname)
+                    metrics_dict[lossname] = float(lossval)
+            if 'policy_entropy' in metrics_dict:
+                metrics_dict['entropy'] = metrics_dict['policy_entropy']
+
+            if wandb_run_enabled:
+                wandb_module.log(metrics_dict, step=metrics_dict['total_timesteps'])
+                if len(ep_returns) > 0:
+                    wandb_module.log(
+                        {'episode_returns_hist': wandb_module.Histogram(ep_returns)},
+                        step=metrics_dict['total_timesteps'],
+                    )
             mpi_print('----\n')
 
         if can_save:
             if save_interval and (update % save_interval == 0):
-                save_model()
+                checkpoint_path = save_model()
+                maybe_log_checkpoint_artifact(checkpoint_path)
 
             for j, checkpoint in enumerate(checkpoints):
                 if (not saved_key_checkpoints[j]) and (step >= (checkpoint * 1e6)):
                     saved_key_checkpoints[j] = True
-                    save_model(str(checkpoint) + 'M')
+                    checkpoint_path = save_model(str(checkpoint) + 'M')
+                    maybe_log_checkpoint_artifact(checkpoint_path)
 
-    save_model()
+    checkpoint_path = save_model()
+    maybe_log_checkpoint_artifact(checkpoint_path)
 
     env.close()
     return mean_rewards
