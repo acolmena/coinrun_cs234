@@ -22,6 +22,14 @@ from baselines.common.runners import AbstractEnvRunner
 from baselines.common.tf_util import initialize
 from baselines.common.mpi_util import sync_from_root
 
+
+def save_obs_frame(obs, path):
+    from PIL import Image
+
+    img = obs[0] if obs.ndim == 4 else obs
+    Image.fromarray(img).save(path)
+
+
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
     def __init__(self, comm, **kwargs):
@@ -168,10 +176,36 @@ class Model(object):
             initialize()
 
 class Runner(AbstractEnvRunner):
-    def __init__(self, *, env, model, nsteps, gamma, lam):
+    def __init__(
+        self,
+        *,
+        env,
+        model,
+        nsteps,
+        gamma,
+        lam,
+        debug_save_frames=False,
+        debug_save_frames_n=16,
+        debug_save_frames_every=1,
+        debug_save_dir=None,
+        jitter_report_after=1000
+    ):
         super().__init__(env=env, model=model, nsteps=nsteps)
         self.lam = lam
         self.gamma = gamma
+        self.debug_save_frames = debug_save_frames
+        self.debug_save_frames_n = int(debug_save_frames_n)
+        self.debug_save_frames_every = max(1, int(debug_save_frames_every))
+        self.debug_save_dir = debug_save_dir
+        self.jitter_report_after = int(jitter_report_after)
+        self.debug_saved = 0
+        self.debug_step_count = 0
+        self.did_jitter_count = 0
+        self.total_steps_count = 0
+        self.jitter_reported = False
+
+        if self.debug_save_frames and self.debug_save_dir:
+            os.makedirs(self.debug_save_dir, exist_ok=True)
 
     def run(self):
         # Here, we init the lists that will contain the mb of experiences
@@ -192,9 +226,49 @@ class Runner(AbstractEnvRunner):
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
             self.obs[:], rewards, self.dones, infos = self.env.step(actions)
-            for info in infos:
-                maybeepinfo = info.get('episode')
-                if maybeepinfo: epinfos.append(maybeepinfo)
+            infos_list = infos if isinstance(infos, (list, tuple)) else [infos]
+            did_jitter_flags = []
+            for info in infos_list:
+                if isinstance(info, dict):
+                    maybeepinfo = info.get('episode')
+                    if maybeepinfo:
+                        epinfos.append(maybeepinfo)
+                    did_jitter_flags.append(bool(info.get('did_jitter', False)))
+
+            if len(did_jitter_flags) > 0:
+                self.did_jitter_count += int(np.sum(did_jitter_flags))
+                self.total_steps_count += len(did_jitter_flags)
+
+            if (not self.jitter_reported) and self.total_steps_count >= self.jitter_report_after:
+                ratio = self.did_jitter_count / float(self.total_steps_count)
+                mpi_print(
+                    'JITTER applied %d/%d (%.3f)' %
+                    (self.did_jitter_count, self.total_steps_count, ratio)
+                )
+                self.jitter_reported = True
+
+            if (
+                self.debug_save_frames and
+                self.debug_saved < self.debug_save_frames_n and
+                (self.debug_step_count % self.debug_save_frames_every == 0) and
+                self.debug_save_dir is not None
+            ):
+                frame_name = 'frame_%03d' % self.debug_saved
+                frame_path = os.path.join(self.debug_save_dir, frame_name + '.png')
+                meta_path = os.path.join(self.debug_save_dir, frame_name + '.txt')
+                save_obs_frame(self.obs, frame_path)
+
+                obs_min = self.obs.min()
+                obs_max = self.obs.max()
+                did_any_jitter = bool(np.any(did_jitter_flags)) if len(did_jitter_flags) > 0 else False
+                with open(meta_path, 'w') as f:
+                    f.write(
+                        'dtype=%s min=%s max=%s did_jitter=%s\n' %
+                        (self.obs.dtype, obs_min, obs_max, did_any_jitter)
+                    )
+                self.debug_saved += 1
+
+            self.debug_step_count += 1
             mb_rewards.append(rewards)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
@@ -240,7 +314,9 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, load_path=None):
+            save_interval=0, load_path=None,
+            debug_save_frames=False, debug_save_frames_n=16,
+            debug_save_frames_every=1, debug_save_dir=None):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     mpi_size = comm.Get_size()
@@ -267,7 +343,17 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
     utils.load_all_params(sess)
 
-    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
+    runner = Runner(
+        env=env,
+        model=model,
+        nsteps=nsteps,
+        gamma=gamma,
+        lam=lam,
+        debug_save_frames=debug_save_frames,
+        debug_save_frames_n=debug_save_frames_n,
+        debug_save_frames_every=debug_save_frames_every,
+        debug_save_dir=debug_save_dir
+    )
 
     epinfobuf10 = deque(maxlen=10)
     epinfobuf100 = deque(maxlen=100)

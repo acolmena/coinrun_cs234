@@ -12,6 +12,7 @@ import tensorflow as tf
 from baselines.common import set_global_seeds
 import coinrun.main_utils as utils
 from coinrun import setup_utils, policies, wrappers, ppo2
+from coinrun.obs_wrappers import PhotometricJitter, ObsTransformWrapper
 from coinrun.config import Config
 
 def _import_wandb():
@@ -104,7 +105,21 @@ def main():
 
     with tf.Session(config=config):
         env = wrappers.add_final_wrappers(env)
-        
+
+        if args.jitter_p > 0.0:
+            jitter = PhotometricJitter(
+                p=args.jitter_p,
+                brightness=args.jitter_brightness,
+                contrast=args.jitter_contrast,
+                seed=args.jitter_seed,
+            )
+            env = ObsTransformWrapper(env, jitter)
+
+        obs = env.reset()
+        print("OBS dtype", obs.dtype, "shape", obs.shape, "min", obs.min(), "max", obs.max())
+        o0 = obs[0] if obs.ndim == 4 else obs
+        print("OBS[0] dtype", o0.dtype, "min", o0.min(), "max", o0.max())
+
         policy = policies.get_policy()
         try:
             ppo2.learn(policy=policy,
@@ -119,7 +134,11 @@ def main():
                         ent_coef=Config.ENTROPY_COEFF,
                         lr=lambda f : f * Config.LEARNING_RATE,
                         cliprange=lambda f : f * 0.2,
-                        total_timesteps=total_timesteps)
+                        total_timesteps=total_timesteps,
+                        debug_save_frames=args.debug_save_frames,
+                        debug_save_frames_n=args.debug_save_frames_n,
+                        debug_save_frames_every=args.debug_save_frames_every,
+                        debug_save_dir=os.path.join(logdir, "debug_frames"))
         finally:
             if wandb_enabled and wandb_module is not None:
                 wandb_module.finish()

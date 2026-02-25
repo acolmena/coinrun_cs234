@@ -96,6 +96,16 @@ class ConfigSingle(object):
         # Overwrite the latest save file after this many updates
         type_keys.append(('si', 'save_interval', int, 10))
 
+        # Observation photometric jitter settings
+        type_keys.append(('jitter-p', 'jitter_p', float, 0.0))
+        type_keys.append(('jitter-brightness', 'jitter_brightness', float, 0.08))
+        type_keys.append(('jitter-contrast', 'jitter_contrast', float, 0.08))
+        type_keys.append(('jitter-seed', 'jitter_seed', int, 0))
+
+        # Debug frame dump settings
+        type_keys.append(('debug-save-frames-n', 'debug_save_frames_n', int, 16))
+        type_keys.append(('debug-save-frames-every', 'debug_save_frames_every', int, 1))
+
         # Weights & Biases integration settings
         type_keys.append(('wandb-project', 'wandb_project', str, 'coinrun'))
         type_keys.append(('wandb-entity', 'wandb_entity', str, None))
@@ -129,6 +139,7 @@ class ConfigSingle(object):
 
         # Enable Weights & Biases logging
         bool_keys.append(('wandb', 'wandb'))
+        bool_keys.append(('debug-save-frames', 'debug_save_frames'))
 
         self.RES_KEYS = []
 

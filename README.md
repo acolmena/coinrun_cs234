@@ -141,3 +141,53 @@ docker run --rm coinrun python -um coinrun.random_agent
 There's also a [Colab notebook](https://colab.research.google.com/drive/1e2Eyl8HANzcqPheVBMbdwi3wqDv41kZt) showing how to setup CoinRun.
 
 See [LICENSES](ASSET_LICENSES.md) for asset license information.
+
+
+# For Our Experiments:
+* To run baseline with wandb: 
+
+```
+export WANDB_API_KEY=<KEY>
+
+python -m coinrun.train_agent --run-id ppo_baseline_N50_S0 --num-levels 50 --set-seed 0 --save-interval 1 --wandb --wandb-project coinrun-smoke
+```
+
+* To run jitter with wandb: 
+```
+python -m coinrun.train_agent \
+  --run-id ppo_jitterP05_N50_S0 \
+  --num-levels 50 \
+  --set-seed 0 \
+  --jitter-p 0.5 \
+  --jitter-brightness 0.08 \
+  --jitter-contrast 0.08 \
+  --save-interval 1 \
+  --wandb \
+  --wandb-project coinrun-smoke \
+
+```
+
+```
+python -m coinrun.train_agent   --run-id ppo_jitterP070_N50_S0   --num-levels 50   --set-seed 0   --jitter-p 0.7   --jitter-brightness 0.08   --jitter-contrast 0.08   --save-interval 1   --wandb   --wandb-project coinrun-smoke 
+```
+
+* Quicker Jitter Run:
+```
+python -m coinrun.train_agent \
+  --run-id small_jitter \
+  --num-levels 50 \
+  --set-seed 0 \
+  --num-envs 1 \
+  --num-steps 8 \
+  --jitter-p 0.5 \
+  --jitter-brightness 0.8 \
+  --jitter-contrast 0.8 \
+  --jitter-seed 0 \
+  --debug-save-frames \
+  --debug-save-frames-n 2 \
+  --debug-save-frames-every 1 \
+  --wandb \
+  --wandb-project coinrun-smoke
+```
+
+
